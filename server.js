@@ -9,9 +9,10 @@ const CONTACT = process.env.VAPID_CONTACT ?? 'mailto:headripper666@gmail.com'
 
 webpush.setVapidDetails(CONTACT, PUBLIC_KEY, PRIVATE_KEY)
 
-// Stockage en mémoire (suffisant pour usage familial)
-const subscriptions = new Map() // endpoint → subscription object
-const reminders = new Map()     // id → { endpoint, title, body, at }
+// userId → Map<endpoint, subscription>
+const userSubscriptions = new Map()
+// id → { userId, title, body, at }
+const reminders = new Map()
 
 const app = express()
 app.use(cors({ origin: '*' }))
@@ -22,16 +23,19 @@ app.get('/vapid-public-key', (req, res) => {
 })
 
 app.post('/subscribe', (req, res) => {
-  const sub = req.body
-  if (!sub?.endpoint) return res.status(400).json({ error: 'invalid subscription' })
-  subscriptions.set(sub.endpoint, sub)
+  const { userId, ...sub } = req.body
+  if (!sub?.endpoint || !userId) return res.status(400).json({ error: 'invalid subscription' })
+
+  if (!userSubscriptions.has(userId)) userSubscriptions.set(userId, new Map())
+  userSubscriptions.get(userId).set(sub.endpoint, sub)
+
   res.json({ ok: true })
 })
 
 app.post('/schedule', (req, res) => {
-  const { id, endpoint, title, body, at } = req.body
-  if (!id || !endpoint || !title || !at) return res.status(400).json({ error: 'missing fields' })
-  reminders.set(id, { endpoint, title, body: body ?? '', at })
+  const { id, userId, title, body, at } = req.body
+  if (!id || !userId || !title || !at) return res.status(400).json({ error: 'missing fields' })
+  reminders.set(id, { userId, title, body: body ?? '', at })
   res.json({ ok: true })
 })
 
@@ -52,19 +56,21 @@ cron.schedule('* * * * *', async () => {
 
   for (const [id, reminder] of reminders.entries()) {
     if (reminder.at > now) continue
-
-    const sub = subscriptions.get(reminder.endpoint)
     reminders.delete(id)
-    if (!sub) continue
 
-    try {
-      await webpush.sendNotification(
-        sub,
-        JSON.stringify({ title: reminder.title, body: reminder.body, tag: id })
-      )
-    } catch (err) {
-      if (err.statusCode === 410) subscriptions.delete(reminder.endpoint)
-      else console.error('Push failed:', err.message)
+    const subs = userSubscriptions.get(reminder.userId)
+    if (!subs || subs.size === 0) continue
+
+    for (const [endpoint, sub] of subs.entries()) {
+      try {
+        await webpush.sendNotification(
+          sub,
+          JSON.stringify({ title: reminder.title, body: reminder.body, tag: id })
+        )
+      } catch (err) {
+        if (err.statusCode === 410) subs.delete(endpoint)
+        else console.error('Push failed:', err.message)
+      }
     }
   }
 })
