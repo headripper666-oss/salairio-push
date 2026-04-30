@@ -3,30 +3,29 @@ const cron = require('node-cron')
 const cors = require('cors')
 
 const GOTIFY_URL = process.env.GOTIFY_URL ?? 'https://renaud-quawks.tailb0d68d.ts.net'
-const GOTIFY_TOKEN = process.env.GOTIFY_TOKEN ?? 'ApxKtfigDwA0dWa'
+const GOTIFY_TOKEN_DEFAULT = process.env.GOTIFY_TOKEN ?? 'ApxKtfigDwA0dWa'
 
-const reminders = new Map() // id → { title, body, at }
+const reminders = new Map() // id → { title, body, at, gotifyToken }
 
 const app = express()
 app.use(cors({ origin: '*' }))
 app.use(express.json())
 
-async function sendGotify(title, body) {
-  await fetch(`${GOTIFY_URL}/message?token=${GOTIFY_TOKEN}`, {
+async function sendGotify(token, title, body) {
+  await fetch(`${GOTIFY_URL}/message?token=${token}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title, message: body, priority: 5 }),
   })
 }
 
-// Endpoints de compatibilité — le front React ne change pas
 app.get('/vapid-public-key', (_req, res) => res.json({ key: 'gotify' }))
 app.post('/subscribe', (_req, res) => res.json({ ok: true }))
 
 app.post('/schedule', (req, res) => {
-  const { id, title, body, at } = req.body
+  const { id, title, body, at, gotifyToken } = req.body
   if (!id || !title || !at) return res.status(400).json({ error: 'missing fields' })
-  reminders.set(id, { title, body: body ?? '', at })
+  reminders.set(id, { title, body: body ?? '', at, gotifyToken: gotifyToken ?? GOTIFY_TOKEN_DEFAULT })
   res.json({ ok: true })
 })
 
@@ -48,7 +47,7 @@ cron.schedule('* * * * *', async () => {
     if (reminder.at > now) continue
     reminders.delete(id)
     try {
-      await sendGotify(reminder.title, reminder.body)
+      await sendGotify(reminder.gotifyToken, reminder.title, reminder.body)
     } catch (err) {
       console.error('Gotify push failed:', err.message)
     }
