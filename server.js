@@ -1,41 +1,32 @@
 const express = require('express')
-const webpush = require('web-push')
 const cron = require('node-cron')
 const cors = require('cors')
 
-const PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY
-const PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY
-const CONTACT = process.env.VAPID_CONTACT ?? 'mailto:headripper666@gmail.com'
+const GOTIFY_URL = process.env.GOTIFY_URL ?? 'https://renaud-quawks.tailb0d68d.ts.net'
+const GOTIFY_TOKEN = process.env.GOTIFY_TOKEN ?? 'ApxKtfigDwA0dWa'
 
-webpush.setVapidDetails(CONTACT, PUBLIC_KEY, PRIVATE_KEY)
-
-// userId → Map<endpoint, subscription>
-const userSubscriptions = new Map()
-// id → { userId, title, body, at }
-const reminders = new Map()
+const reminders = new Map() // id → { title, body, at }
 
 const app = express()
 app.use(cors({ origin: '*' }))
 app.use(express.json())
 
-app.get('/vapid-public-key', (req, res) => {
-  res.json({ key: PUBLIC_KEY })
-})
+async function sendGotify(title, body) {
+  await fetch(`${GOTIFY_URL}/message?token=${GOTIFY_TOKEN}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, message: body, priority: 5 }),
+  })
+}
 
-app.post('/subscribe', (req, res) => {
-  const { userId, ...sub } = req.body
-  if (!sub?.endpoint || !userId) return res.status(400).json({ error: 'invalid subscription' })
-
-  if (!userSubscriptions.has(userId)) userSubscriptions.set(userId, new Map())
-  userSubscriptions.get(userId).set(sub.endpoint, sub)
-
-  res.json({ ok: true })
-})
+// Endpoints de compatibilité — le front React ne change pas
+app.get('/vapid-public-key', (_req, res) => res.json({ key: 'gotify' }))
+app.post('/subscribe', (_req, res) => res.json({ ok: true }))
 
 app.post('/schedule', (req, res) => {
-  const { id, userId, title, body, at } = req.body
-  if (!id || !userId || !title || !at) return res.status(400).json({ error: 'missing fields' })
-  reminders.set(id, { userId, title, body: body ?? '', at })
+  const { id, title, body, at } = req.body
+  if (!id || !title || !at) return res.status(400).json({ error: 'missing fields' })
+  reminders.set(id, { title, body: body ?? '', at })
   res.json({ ok: true })
 })
 
@@ -53,27 +44,16 @@ app.delete('/schedule-prefix/:prefix', (req, res) => {
 
 cron.schedule('* * * * *', async () => {
   const now = Date.now()
-
   for (const [id, reminder] of reminders.entries()) {
     if (reminder.at > now) continue
     reminders.delete(id)
-
-    const subs = userSubscriptions.get(reminder.userId)
-    if (!subs || subs.size === 0) continue
-
-    for (const [endpoint, sub] of subs.entries()) {
-      try {
-        await webpush.sendNotification(
-          sub,
-          JSON.stringify({ title: reminder.title, body: reminder.body, tag: id })
-        )
-      } catch (err) {
-        if (err.statusCode === 410) subs.delete(endpoint)
-        else console.error('Push failed:', err.message)
-      }
+    try {
+      await sendGotify(reminder.title, reminder.body)
+    } catch (err) {
+      console.error('Gotify push failed:', err.message)
     }
   }
 })
 
 const PORT = process.env.PORT ?? 3005
-app.listen(PORT, () => console.log(`Push server running on port ${PORT}`))
+app.listen(PORT, () => console.log(`Push server (Gotify) running on port ${PORT}`))
